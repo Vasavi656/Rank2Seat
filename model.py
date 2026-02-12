@@ -1,127 +1,186 @@
-# model.py
 import pandas as pd
 import re
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 
-# ------------------------------------
+# ======================================================
 # NORMALIZATION FUNCTIONS
-# ------------------------------------
+# ======================================================
+
 def normalize_college(name):
     if pd.isna(name):
-        return None
-    x = str(name).upper()
-    x = x.replace(".", "").replace(",", "")
-    x = x.replace("ENGG", "ENGINEERING")
-    x = x.replace("ENG", "ENGINEERING")
-    x = re.sub(r"\s+", " ", x).strip()
-    return x
+        return name
+
+    name = str(name).upper().strip()
+
+    # remove punctuation
+    name = name.replace(".", "").replace(",", "")
+
+    # standardize common words
+    name = name.replace("ENGG", "ENGINEERING")
+    name = name.replace("ENG ", "ENGINEERING ")
+
+    # remove multiple spaces
+    name = re.sub(r"\s+", " ", name)
+
+    return name
 
 
 def normalize_category(cat):
     if pd.isna(cat):
-        return None
-    c = str(cat).upper().strip().replace("_", "").replace("-", "")
+        return cat
+
+    cat = str(cat).upper().strip()
+    cat = cat.replace("_", "").replace("-", "").replace(" ", "")
+
     mapping = {
         "BCA": "BC-A",
         "BCB": "BC-B",
         "BCC": "BC-C",
         "BCD": "BC-D",
         "BCE": "BC-E",
+        "OCEWS": "OC-EWS",
+        "EWS": "OC-EWS",
         "OC": "OC",
         "SC": "SC",
-        "ST": "ST",
-        "EWS": "OC_EWS",
-        "OCEWS": "OC_EWS",
+        "ST": "ST"
     }
-    return mapping.get(c, c)
+
+    return mapping.get(cat, cat)
 
 
 def normalize_gender(g):
     if pd.isna(g):
-        return None
+        return g
+
     g = str(g).upper().strip()
-    if g in ["F", "FEMALE"]:
+
+    if g in ["FEMALE", "F"]:
         return "F"
-    if g in ["M", "MALE"]:
+    if g in ["MALE", "M"]:
         return "M"
+
     return g
 
 
-# ------------------------------------
-# LOAD ALL YEARS DATA
-# ------------------------------------
-files = [
-    "sample_data/2019.csv",
-    "sample_data/2020.csv",
-    "sample_data/2022.csv",
-    "sample_data/2023.csv",
-    "sample_data/2024.csv",
-]
+# ======================================================
+# LOAD AND CLEAN DATA
+# ======================================================
 
-dfs = [pd.read_csv(f) for f in files]
-data = pd.concat(dfs, ignore_index=True)
+def load_data():
 
-# Normalize dataset
-data["CollegeName"] = data["CollegeName"].apply(normalize_college)
-data["Branch"] = data["Branch"].astype(str).str.upper().str.strip()
-data["Gender"] = data["Gender"].apply(normalize_gender)
-data["Category"] = data["Category"].apply(normalize_category)
+    files = [
+        ("sample_data/2019.csv", 2019),
+        ("sample_data/2020.csv", 2020),
+        ("sample_data/2022.csv", 2022),
+        ("sample_data/2023.csv", 2023),
+        ("sample_data/2024.csv", 2024),
+    ]
 
-# ------------------------------------
-# PREPARE ML TRAINING DATA
-# ------------------------------------
+    dfs = []
+
+    for file, year in files:
+        df = pd.read_csv(file)
+        df["Year"] = year
+        dfs.append(df)
+
+    df = pd.concat(dfs, ignore_index=True)
+
+    # Apply normalization
+    df["CollegeName"] = df["CollegeName"].apply(normalize_college)
+    df["Category"] = df["Category"].apply(normalize_category)
+    df["Gender"] = df["Gender"].apply(normalize_gender)
+    df["Branch"] = df["Branch"].astype(str).str.upper().str.strip()
+
+    # Remove duplicates
+    df = df.drop_duplicates()
+
+    return df
+
+
+data = load_data()
+
+
+# ======================================================
+# GENERATE SYNTHETIC TRAINING DATA
+# ======================================================
+
 rows = []
+
 for _, r in data.iterrows():
     cutoff = int(r["CutoffRank"])
-    for diff in [-15000, -8000, -3000, -1000, -200, 200, 1000, 3000, 8000]:
-        rank = cutoff - diff
-        if rank <= 0:
-            continue
+
+    for rank in range(max(1, cutoff - 6000), cutoff + 6000, 1500):
+
+        seat = 1 if rank <= cutoff else 0
+
         rows.append({
-            "RankDiff": cutoff - rank,
-            "Seat": 1 if rank <= cutoff else 0
+            "UserRank": rank,
+            "Category": r["Category"],
+            "Gender": r["Gender"],
+            "CollegeName": r["CollegeName"],
+            "Branch": r["Branch"],
+            "Year": r["Year"],
+            "SeatPossible": seat
         })
 
 train_df = pd.DataFrame(rows)
-X = train_df[["RankDiff"]]
-y = train_df["Seat"]
 
-# ------------------------------------
-# TRAIN ML MODEL
-# ------------------------------------
-model = Pipeline([
-    ("scaler", StandardScaler()),
-    ("clf", LogisticRegression())
-])
-model.fit(X, y)
 
-# ------------------------------------
+# ======================================================
+# ENCODE CATEGORICAL FEATURES
+# ======================================================
+
+encoders = {}
+
+for col in ["Category", "Gender", "CollegeName", "Branch"]:
+    le = LabelEncoder()
+    train_df[col] = le.fit_transform(train_df[col])
+    encoders[col] = le
+
+X = train_df[[
+    "UserRank",
+    "Category",
+    "Gender",
+    "CollegeName",
+    "Branch",
+    "Year"
+]]
+
+y = train_df["SeatPossible"]
+
+# Scale features
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y, test_size=0.2, random_state=42
+)
+
+# Train Logistic Regression
+model = LogisticRegression(max_iter=1000)
+model.fit(X_train, y_train)
+
+print("✅ Logistic Regression Model Trained Successfully")
+
+
+# ======================================================
 # PREDICTION FUNCTION
-# ------------------------------------
-def predict_probability(rank, college_code, branch, category, gender):
-    category = normalize_category(category)
-    branch = branch.upper().strip()
-    gender = normalize_gender(gender)
+# ======================================================
 
-    subset = data[
-        (data["CollegeCode"] == college_code) &
-        (data["Branch"] == branch) &
-        (data["Category"] == category) &
-        (data["Gender"] == gender)
-    ]
+def predict_probability(rank, college_name, branch, category, gender):
 
-    if subset.empty:
-        return None, None, None, None
+    input_df = pd.DataFrame([{
+        "UserRank": rank,
+        "Category": encoders["Category"].transform([normalize_category(category)])[0],
+        "Gender": encoders["Gender"].transform([normalize_gender(gender)])[0],
+        "CollegeName": encoders["CollegeName"].transform([normalize_college(college_name)])[0],
+        "Branch": encoders["Branch"].transform([branch.upper().strip()])[0],
+        "Year": 2024
+    }])
 
-    avg_cutoff = int(subset["CutoffRank"].mean())
-    latest_cutoff = int(subset["CutoffRank"].iloc[-1])
+    input_scaled = scaler.transform(input_df)
+    prob = model.predict_proba(input_scaled)[0][1]
 
-    rank_diff = avg_cutoff - rank
-    probability = model.predict_proba([[rank_diff]])[0][1] * 100
-    probability = round(min(probability, 99.0), 2)
-
-    yearwise = subset  # optional for future tables
-
-    return probability, avg_cutoff, latest_cutoff, yearwise
+    return round(prob * 100, 2)
